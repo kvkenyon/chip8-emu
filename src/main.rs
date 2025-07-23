@@ -75,6 +75,74 @@ impl Chip8 {
         }
     }
 
+    pub fn fetch(&mut self) -> u16 {
+        let msb = self.memory[self.pc as usize];
+        let lsb = self.memory[(self.pc + 1) as usize];
+        self.pc += 2;
+        ((msb as u16) << 8) | (lsb as u16)
+    }
+
+    pub fn decode(&self, instr: u16) {
+        let opcode = instr & 0xF000;
+        let x = ((instr & 0x0F00) >> 8) as usize;
+        let y = ((instr & 0x00F0) >> 4) as usize;
+        let n = instr & 0x000F;
+        let nn = instr & 0x00FF;
+        let nnn = instr & 0x0FFF;
+        match opcode {
+            0x00E0 => println!("CLS"),
+            0x00EE => println!("RET"),
+            0x1000 => println!("JMP $0x{nnn:03X}"),
+            0x2000 => println!("CALL $0x{nnn:03X}"),
+            0x3000 => println!("SE V{x}, $0x{nn:03X}"),
+            0x4000 => println!("SNE V{x}, $0x{nn:03X}"),
+            0x5000 => println!("SNE V{x} V{y}"),
+            0x6000 => println!("LD V{x}, $0x{nn:03X}"),
+            0x7000 => println!("ADD V{x}, $0x{nn:03X}"),
+            0x8000 => match n {
+                0x0 => println!("LD V{x}, V{y}"),
+                0x1 => println!("OR V{x}, V{y}"),
+                0x2 => println!("AND V{x}, V{y}"),
+                0x3 => println!("XOR V{x}, V{y}"),
+                0x4 => println!("ADD V{x}, V{y}"),
+                0x5 => println!("SUB V{x}, V{y}"),
+                0x6 => println!("SHR V{x}, V{y}"),
+                0x7 => println!("SUBN V{x}, V{y}"),
+                0xE => println!("SHL V{x}, V{y}"),
+                _ => panic!("Illegal instruction: {instr}"),
+            },
+            0x9000 => match n {
+                0x0 => println!("SNE V{x}, V{y}"),
+                _ => panic!("Illegal instruction {instr}"),
+            },
+            0xA000 => println!("LD I, $0x{nnn:03X}"),
+            0xB000 => println!("JMP V0, $0x{nnn:03X}"),
+            0xC000 => println!("RND V{x}, $0x{nn:03X}"),
+            0xD000 => println!("DRW V{x}, V{y}, ${n:02X}"),
+            0xE000 => match nn {
+                0x9E => println!("SKP V{x}"),
+                0xA1 => println!("SKNP V{x}"),
+                _ => panic!("Illegal instruction: {instr}"),
+            },
+            0xF000 => match nn {
+                0x07 => println!("LD V{x}, DT"),
+                0x0A => println!("LD V{x}, K"),
+                0x15 => println!("LD DT, V{x}"),
+                0x18 => println!("LD ST, V{x}"),
+                0x1E => println!("ADD I, V{x}"),
+                0x29 => println!("LD F, V{x}"),
+                0x33 => println!("LD B, V{x}"),
+                0x55 => println!("LD [I], V{x}"),
+                0x65 => println!("LD V{x}, [I]"),
+                _ => println!("Illegal instruction: {instr}"),
+            },
+
+            _ => panic!("Illegal instruction: {instr}"),
+        };
+    }
+
+    pub fn execute(&self) {}
+
     pub fn load_font(&mut self) {
         println!("[CHIP8] Loading font...");
         // 050–09F
@@ -136,6 +204,14 @@ fn main() {
     chip8.load_font();
 
     chip8.memory_hexdump(0x050, 0x09F + 1);
+
+    println!("[CHIP8] Start fetch-decode-execute loop");
+    for _ in 0..10 {
+        let instr = chip8.fetch();
+        //let decoded_inster = chip8.decode(instr);
+        //chip8.execute(decoded_inster);
+        chip8.decode(instr);
+    }
 
     println!("[CHIP8] Exiting...");
 }
