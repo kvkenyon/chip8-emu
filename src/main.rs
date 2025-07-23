@@ -1,10 +1,15 @@
-use std::env;
+use rand::Rng;
 use std::error::Error;
 use std::fs::File;
 use std::io::Read;
 use std::process;
+use std::{env, usize};
 
-const START_ADDRESS: u16 = 0x200;
+const DISPLAY_WIDTH: usize = 64;
+const DISPLAY_HEIGHT: usize = 32;
+const DISPLAY_SIZE: usize = DISPLAY_WIDTH * DISPLAY_HEIGHT;
+
+const START_ADDRESS: usize = 0x200;
 
 const FONT: [u8; 80] = [
     0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
@@ -48,13 +53,13 @@ struct Chip8 {
     registers: [u8; 16],
     memory: [u8; 4096],
     index: u16,
-    pc: u16,
+    pc: usize,
     stack: [u8; 16],
-    sp: u8,
+    sp: usize,
     delay_timer: u8,
     sound_timer: u8,
     keypad: [u8; 16],
-    video: [u32; 64 * 32],
+    video: [u32; DISPLAY_SIZE],
     op_code: u16,
 }
 
@@ -82,7 +87,7 @@ impl Chip8 {
         ((msb as u16) << 8) | (lsb as u16)
     }
 
-    pub fn decode(&self, instr: u16) {
+    pub fn decode(&mut self, instr: u16) {
         let opcode = instr & 0xF000;
         let x = ((instr & 0x0F00) >> 8) as usize;
         let y = ((instr & 0x00F0) >> 4) as usize;
@@ -90,58 +95,256 @@ impl Chip8 {
         let nn = instr & 0x00FF;
         let nnn = instr & 0x0FFF;
         match opcode {
-            0x00E0 => println!("CLS"),
-            0x00EE => println!("RET"),
-            0x1000 => println!("JMP $0x{nnn:03X}"),
-            0x2000 => println!("CALL $0x{nnn:03X}"),
-            0x3000 => println!("SE V{x}, $0x{nn:03X}"),
-            0x4000 => println!("SNE V{x}, $0x{nn:03X}"),
-            0x5000 => println!("SNE V{x} V{y}"),
-            0x6000 => println!("LD V{x}, $0x{nn:03X}"),
-            0x7000 => println!("ADD V{x}, $0x{nn:03X}"),
+            0x00E0 => {
+                println!("CLS");
+                self.video = [0; 64 * 32]
+            }
+            0x00EE => {
+                println!("RET");
+                self.sp -= 1;
+                self.pc = self.stack[self.sp] as usize;
+            }
+
+            0x1000 => {
+                println!("JMP $0x{nnn:03X}");
+                self.pc = nnn as usize;
+            }
+            0x2000 => {
+                println!("CALL $0x{nnn:03X}");
+                self.stack[self.sp] = self.pc as u8;
+                self.pc = nnn as usize;
+                self.sp += 1;
+            }
+            0x3000 => {
+                println!("SE V{x}, $0x{nn:03X}");
+                if self.registers[x] as u16 == nn {
+                    self.pc += 2;
+                }
+            }
+            0x4000 => {
+                println!("SNE V{x}, $0x{nn:03X}");
+                if self.registers[x] as u16 != nn {
+                    self.pc += 2;
+                }
+            }
+            0x5000 => {
+                println!("SNE V{x} V{y}");
+                if self.registers[x] != self.registers[y] {
+                    self.pc += 2;
+                }
+            }
+            0x6000 => {
+                println!("LD V{x}, 0x{nn:03X}");
+                self.registers[x] = nn as u8;
+            }
+            0x7000 => {
+                // VX := VX + NN,
+                println!("ADD V{x}, $0x{nn:03X}");
+                self.registers[x] += nn as u8;
+            }
             0x8000 => match n {
-                0x0 => println!("LD V{x}, V{y}"),
-                0x1 => println!("OR V{x}, V{y}"),
-                0x2 => println!("AND V{x}, V{y}"),
-                0x3 => println!("XOR V{x}, V{y}"),
-                0x4 => println!("ADD V{x}, V{y}"),
-                0x5 => println!("SUB V{x}, V{y}"),
-                0x6 => println!("SHR V{x}, V{y}"),
-                0x7 => println!("SUBN V{x}, V{y}"),
-                0xE => println!("SHL V{x}, V{y}"),
+                0x0 => {
+                    println!("LD V{x}, V{y}");
+                    self.registers[x] = self.registers[y];
+                }
+                0x1 => {
+                    // VX := VX | VY
+                    println!("OR V{x}, V{y}");
+                    self.registers[x] |= self.registers[y];
+                }
+                0x2 => {
+                    println!("AND V{x}, V{y}");
+                    self.registers[x] &= self.registers[y];
+                }
+                0x3 => {
+                    println!("XOR V{x}, V{y}");
+                    self.registers[x] ^= self.registers[y];
+                }
+                0x4 => {
+                    println!("ADD V{x}, V{y}");
+                    let vx = self.registers[x];
+                    let vy = self.registers[y];
+                    let (result, overflow) = vx.overflowing_add(vy);
+                    self.registers[0xF] = if overflow { 1 } else { 0 };
+                    self.registers[x] = result;
+                }
+                0x5 => {
+                    println!("SUB V{x}, V{y}");
+                    let vx = self.registers[x];
+                    let vy = self.registers[y];
+                    self.registers[0xF] = if vx > vy { 1 } else { 0 };
+                    self.registers[x] = vx - vy;
+                }
+                0x6 => {
+                    println!("SHR V{x}, V{y}");
+                    self.registers[0xF] = self.registers[x] & 0x01;
+                    self.registers[x] /= 2;
+                }
+                0x7 => {
+                    println!("SUBN V{x}, V{y}");
+                    let vx = self.registers[x];
+                    let vy = self.registers[y];
+                    self.registers[0xF] = if vy > vx { 1 } else { 0 };
+                    self.registers[x] = vy - vx;
+                }
+                0xE => {
+                    println!("SHL V{x}, V{y}");
+                    let vx = self.registers[x];
+                    self.registers[0xF] = vx & 0x80;
+                    self.registers[0xF] = vx * 2;
+                }
                 _ => panic!("Illegal instruction: {instr}"),
             },
             0x9000 => match n {
-                0x0 => println!("SNE V{x}, V{y}"),
+                0x0 => {
+                    println!("SNE V{x}, V{y}");
+                    if self.registers[x] != self.registers[y] {
+                        self.pc += 2;
+                    }
+                }
                 _ => panic!("Illegal instruction {instr}"),
             },
-            0xA000 => println!("LD I, $0x{nnn:03X}"),
-            0xB000 => println!("JMP V0, $0x{nnn:03X}"),
-            0xC000 => println!("RND V{x}, $0x{nn:03X}"),
-            0xD000 => println!("DRW V{x}, V{y}, ${n:02X}"),
+            0xA000 => {
+                println!("LD I, $0x{nnn:03X}");
+                self.index = nnn;
+            }
+            0xB000 => {
+                println!("JMP V0, $0x{nnn:03X}");
+                self.pc = (self.registers[0x0] + (nnn as u8)) as usize;
+            }
+            0xC000 => {
+                println!("RND V{x}, $0x{nn:03X}");
+                let entropy = rand::rng().random_range(0..255) as u8;
+                self.registers[x] = entropy & nn as u8;
+            }
+            0xD000 => {
+                println!("DRW V{x}, V{y}, ${n:02X}");
+                let x_coord = self.registers[x] % (DISPLAY_WIDTH as u8);
+                let y_coord = self.registers[y] % (DISPLAY_HEIGHT as u8);
+
+                for row in 0..n {
+                    let addr = row + self.index;
+                    let bits = self.memory[addr as usize];
+                    let cy = (y_coord + row as u8) % (DISPLAY_HEIGHT as u8);
+                    for col in 0..8 {
+                        let cx = (x_coord + col) % (DISPLAY_WIDTH as u8);
+                        let sprite_pixel = bits & (0x80 >> col);
+
+                        let screen_pixel_loc = (cy as usize * DISPLAY_WIDTH) + cx as usize;
+                        let screen_pixel = self.video[screen_pixel_loc];
+                        if sprite_pixel > 0 {
+                            if screen_pixel > 0 {
+                                self.registers[0xF] = 1;
+                            }
+
+                            self.video[screen_pixel_loc] ^= 0xFFFFFFFF;
+                        }
+                    }
+                }
+            }
             0xE000 => match nn {
-                0x9E => println!("SKP V{x}"),
-                0xA1 => println!("SKNP V{x}"),
+                0x9E => {
+                    println!("SKP V{x}");
+                    if self.keypad[self.registers[x] as usize] == 1 {
+                        self.pc += 2;
+                    }
+                }
+                0xA1 => {
+                    println!("SKNP V{x}");
+                    if self.keypad[self.registers[x] as usize] == 0 {
+                        self.pc += 2;
+                    }
+                }
                 _ => panic!("Illegal instruction: {instr}"),
             },
             0xF000 => match nn {
-                0x07 => println!("LD V{x}, DT"),
-                0x0A => println!("LD V{x}, K"),
-                0x15 => println!("LD DT, V{x}"),
-                0x18 => println!("LD ST, V{x}"),
-                0x1E => println!("ADD I, V{x}"),
-                0x29 => println!("LD F, V{x}"),
-                0x33 => println!("LD B, V{x}"),
-                0x55 => println!("LD [I], V{x}"),
-                0x65 => println!("LD V{x}, [I]"),
+                0x07 => {
+                    println!("LD V{x}, DT");
+                    self.registers[x] = self.delay_timer;
+                }
+                0x0A => {
+                    println!("LD V{x}, K");
+                    if self.keypad[0] == 1 {
+                        self.registers[x] = 0;
+                    } else if self.keypad[1] == 1 {
+                        self.registers[x] = 1;
+                    } else if self.keypad[2] == 1 {
+                        self.registers[x] = 2;
+                    } else if self.keypad[3] == 1 {
+                        self.registers[x] = 3;
+                    } else if self.keypad[4] == 1 {
+                        self.registers[x] = 4;
+                    } else if self.keypad[5] == 1 {
+                        self.registers[x] = 5;
+                    } else if self.keypad[6] == 1 {
+                        self.registers[x] = 6;
+                    } else if self.keypad[7] == 1 {
+                        self.registers[x] = 7;
+                    } else if self.keypad[8] == 1 {
+                        self.registers[x] = 8;
+                    } else if self.keypad[9] == 1 {
+                        self.registers[x] = 9;
+                    } else if self.keypad[10] == 1 {
+                        self.registers[x] = 10;
+                    } else if self.keypad[11] == 1 {
+                        self.registers[x] = 11;
+                    } else if self.keypad[12] == 1 {
+                        self.registers[x] = 12;
+                    } else if self.keypad[13] == 1 {
+                        self.registers[x] = 13;
+                    } else if self.keypad[14] == 1 {
+                        self.registers[x] = 14;
+                    } else if self.keypad[15] == 1 {
+                        self.registers[x] = 15;
+                    } else {
+                        println!("Waiting for keypress...");
+                        self.pc -= 2;
+                    }
+                }
+                0x15 => {
+                    println!("LD DT, V{x}");
+                    self.delay_timer = self.registers[x];
+                }
+                0x18 => {
+                    println!("LD ST, V{x}");
+                    self.sound_timer = self.registers[x];
+                }
+                0x1E => {
+                    println!("ADD I, V{x}");
+                    self.index += self.registers[x] as u16;
+                }
+                0x29 => {
+                    println!("LD F, V{x}");
+                    self.index = (self.registers[x] * 0x05 + 0x050) as u16;
+                }
+                0x33 => {
+                    println!("LD B, V{x}");
+                    let vx = self.registers[x];
+                    let h = vx / 100;
+                    let t = (vx - h * 100) / 10;
+                    let o = vx - h * 100 - t * 10;
+                    self.memory[self.index as usize] = h;
+                    self.memory[(self.index + 1) as usize] = t;
+                    self.memory[(self.index + 2) as usize] = o;
+                }
+                0x55 => {
+                    println!("LD [I], V{x}");
+                    for reg in 0..x {
+                        self.memory[self.index as usize + reg] = self.registers[reg];
+                    }
+                }
+                0x65 => {
+                    println!("LD V{x}, [I]");
+                    for reg in 0..x {
+                        self.registers[reg] = self.memory[(self.index as usize) + reg];
+                    }
+                }
                 _ => println!("Illegal instruction: {instr}"),
             },
 
             _ => panic!("Illegal instruction: {instr}"),
         };
     }
-
-    pub fn execute(&self) {}
 
     pub fn load_font(&mut self) {
         println!("[CHIP8] Loading font...");
