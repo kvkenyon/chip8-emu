@@ -6,6 +6,25 @@ use std::process;
 
 const START_ADDRESS: u16 = 0x200;
 
+const FONT: [u8; 80] = [
+    0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
+    0x20, 0x60, 0x20, 0x20, 0x70, // 1
+    0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
+    0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
+    0x90, 0x90, 0xF0, 0x10, 0x10, // 4
+    0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
+    0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
+    0xF0, 0x10, 0x20, 0x40, 0x40, // 7
+    0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
+    0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
+    0xF0, 0x90, 0xF0, 0x90, 0x90, // A
+    0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
+    0xF0, 0x80, 0x80, 0x80, 0xF0, // C
+    0xE0, 0x90, 0x90, 0x90, 0xE0, // D
+    0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
+    0xF0, 0x80, 0xF0, 0x80, 0x80, // F
+];
+
 #[derive(Debug)]
 pub struct Config {
     pub file_path: String,
@@ -56,7 +75,16 @@ impl Chip8 {
         }
     }
 
+    pub fn load_font(&mut self) {
+        println!("[CHIP8] Loading font...");
+        // 050–09F
+        for (i, addr) in (0x050..0x09f + 1).enumerate() {
+            self.memory[addr] = FONT[i];
+        }
+    }
+
     pub fn load_rom(&mut self, file_path: &String) -> Result<(), Box<dyn Error>> {
+        println!("[CHIP8] Loading ROM...");
         let mut file = File::open(file_path)?;
         let bytes_read = file.read(&mut self.memory[0x200..])?;
         println!("[CHIP8] Loaded {bytes_read} bytes from {file_path}.");
@@ -105,6 +133,10 @@ fn main() {
 
     chip8.memory_hexdump(0x200, 0x238);
 
+    chip8.load_font();
+
+    chip8.memory_hexdump(0x050, 0x09F + 1);
+
     println!("[CHIP8] Exiting...");
 }
 
@@ -118,6 +150,7 @@ mod tests {
         chip8.load_rom(&fp).expect("should load the rom");
         chip8.memory_hexdump(0x200, 0x238);
         assert_eq!(chip8.memory[0x200], 0x60);
+        assert_eq!(chip8.memory[0x200], 0x60);
         assert_eq!(chip8.memory[0x201], 0x00);
         assert_eq!(chip8.memory[0x202], 0x61);
         assert_eq!(chip8.memory[0x203], 0x00);
@@ -127,5 +160,12 @@ mod tests {
         assert_eq!(chip8.memory[0x220], 0x20);
         assert_eq!(chip8.memory[0x221], 0x10);
         assert_eq!(chip8.memory[0x230], 0x00);
+    }
+
+    #[test]
+    fn load_font_test() {
+        let mut chip8 = super::Chip8::new();
+        chip8.load_font();
+        assert_eq!(super::FONT, chip8.memory[0x050..0x09f + 1]);
     }
 }
