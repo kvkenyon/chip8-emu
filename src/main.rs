@@ -17,6 +17,7 @@ use std::{env, usize};
 const DISPLAY_WIDTH: usize = 64;
 const DISPLAY_HEIGHT: usize = 32;
 const DISPLAY_SIZE: usize = DISPLAY_WIDTH * DISPLAY_HEIGHT;
+const PITCH: u32 = DISPLAY_WIDTH as u32 * 4;
 
 const START_ADDRESS: usize = 0x200;
 
@@ -72,13 +73,12 @@ struct Chip8 {
     memory: [u8; 4096],
     index: u16,
     pc: usize,
-    stack: [u8; 16],
+    stack: [u16; 16],
     sp: usize,
     delay_timer: u8,
     sound_timer: u8,
     keypad: [u8; 16],
     video: [u32; DISPLAY_SIZE],
-    op_code: u16,
 }
 
 impl Chip8 {
@@ -94,7 +94,6 @@ impl Chip8 {
             sound_timer: 0,
             keypad: [0; 16],
             video: [0; 64 * 32],
-            op_code: 0,
         };
         chip8.load_font();
         chip8
@@ -118,7 +117,7 @@ impl Chip8 {
         match opcode {
             0x0000 => match nn {
                 0x00 => {
-                    println!("???? instr={instr:04X}");
+                    println!("???? opcode={instr:04X}");
                 }
                 0xE0 => {
                     println!("CLS");
@@ -126,6 +125,11 @@ impl Chip8 {
                 }
                 0xEE => {
                     println!("RET");
+                    println!(
+                        "RET: Restoring PC from stack[{}] = 0x{:03X}",
+                        self.sp - 1,
+                        self.stack[self.sp - 1]
+                    );
                     self.sp -= 1;
                     self.pc = self.stack[self.sp] as usize;
                 }
@@ -138,9 +142,13 @@ impl Chip8 {
             }
             0x2000 => {
                 println!("CALL $0x{nnn:03X}");
-                self.stack[self.sp] = self.pc as u8;
-                self.pc = nnn as usize;
+                println!(
+                    "CALL 0x{:03X}: Saving PC=0x{:03X} to stack[{}]",
+                    nnn, self.pc, self.sp
+                );
+                self.stack[self.sp] = self.pc as u16;
                 self.sp += 1;
+                self.pc = nnn as usize;
             }
             0x3000 => {
                 println!("SE V{x}, $0x{nn:03X}");
@@ -202,7 +210,8 @@ impl Chip8 {
                     let vx = self.registers[x];
                     let vy = self.registers[y];
                     self.registers[0xF] = if vx > vy { 1 } else { 0 };
-                    self.registers[x] = vx - vy;
+                    let (result, _) = vx.overflowing_sub(vy);
+                    self.registers[x] = result;
                 }
                 0x6 => {
                     println!("SHR V{x}, V{y}");
@@ -214,13 +223,15 @@ impl Chip8 {
                     let vx = self.registers[x];
                     let vy = self.registers[y];
                     self.registers[0xF] = if vy > vx { 1 } else { 0 };
-                    self.registers[x] = vy - vx;
+                    let (result, _) = vy.overflowing_sub(vx);
+                    self.registers[x] = result;
                 }
                 0xE => {
                     println!("SHL V{x}, V{y}");
                     let vx = self.registers[x];
                     self.registers[0xF] = vx & 0x80;
-                    self.registers[0xF] = vx * 2;
+                    let (r, _) = vx.overflowing_mul(2);
+                    self.registers[x] = r;
                 }
                 _ => panic!("Illegal instruction: {instr}"),
             },
@@ -358,13 +369,13 @@ impl Chip8 {
                 }
                 0x55 => {
                     println!("LD [I], V{x}");
-                    for reg in 0..x {
+                    for reg in 0..=x {
                         self.memory[self.index as usize + reg] = self.registers[reg];
                     }
                 }
                 0x65 => {
                     println!("LD V{x}, [I]");
-                    for reg in 0..x {
+                    for reg in 0..=x {
                         self.registers[reg] = self.memory[(self.index as usize) + reg];
                     }
                 }
@@ -396,6 +407,7 @@ impl Chip8 {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn memory_hexdump(&self, start: u16, end: u16) {
         for (i, chunk) in self.memory[start as usize..end as usize]
             .chunks(16)
@@ -432,7 +444,7 @@ impl Renderer {
         scale: u32,
     ) -> Result<(), String> {
         // RGBA
-        let mut pixels = [0u8; DISPLAY_HEIGHT * DISPLAY_WIDTH * 3];
+        let mut pixels = [0u8; DISPLAY_HEIGHT * PITCH as usize];
         let mut texture = self
             .texture_creator
             .create_texture_streaming(
@@ -444,21 +456,27 @@ impl Renderer {
 
         for (i, &pixel) in framebuffer.iter().enumerate() {
             let color = if pixel != 0 { 255 } else { 0 }; // White or black
-            let pixel_start = i * 3;
+            let pixel_start = i * 4;
             pixels[pixel_start] = color; // R
             pixels[pixel_start + 1] = color; // G
             pixels[pixel_start + 2] = color; // B
+            pixels[pixel_start + 3] = color; // A
         }
 
         // Drawing logic here...
         // Update texture with pixel data
-        let _ = texture.update(None, &pixels, 64 * 3);
+        let _ = texture.update(None, &pixels, PITCH as usize);
 
         // Clear canvas and draw texture scaled up
         self.canvas.set_draw_color(sdl2::pixels::Color::BLACK);
         self.canvas.clear();
 
-        let dst_rect = Rect::new(0, 0, 64 * scale, 32 * scale);
+        let dst_rect = Rect::new(
+            0,
+            0,
+            DISPLAY_WIDTH as u32 * scale,
+            DISPLAY_HEIGHT as u32 * scale,
+        );
         self.canvas.copy(&texture, None, Some(dst_rect))?;
 
         self.canvas.present();
