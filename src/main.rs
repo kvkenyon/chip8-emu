@@ -1,8 +1,17 @@
+extern crate sdl2;
 use rand::Rng;
+use sdl2::event::Event;
+use sdl2::keyboard::Keycode;
+use sdl2::pixels::PixelFormatEnum;
+use sdl2::rect::Rect;
+use sdl2::render::{TextureCreator, WindowCanvas};
+
+use sdl2::video::{Window, WindowContext};
 use std::error::Error;
 use std::fs::File;
 use std::io::Read;
 use std::process;
+use std::time::Duration;
 use std::{env, usize};
 
 const DISPLAY_WIDTH: usize = 64;
@@ -33,6 +42,7 @@ const FONT: [u8; 80] = [
 #[derive(Debug)]
 pub struct Config {
     pub file_path: String,
+    pub video_scale_factor: u32,
 }
 
 impl Config {
@@ -44,7 +54,15 @@ impl Config {
             None => return Err("Didnt get a file path"),
         };
 
-        Ok(Config { file_path })
+        let video_scale_factor: u32 = match args.next() {
+            Some(scale_str) => scale_str.parse().unwrap_or(2),
+            None => 2,
+        };
+
+        Ok(Config {
+            file_path,
+            video_scale_factor,
+        })
     }
 }
 
@@ -65,7 +83,7 @@ struct Chip8 {
 
 impl Chip8 {
     pub fn new() -> Chip8 {
-        Chip8 {
+        let mut chip8 = Chip8 {
             registers: [0u8; 16],
             memory: [0u8; 4096],
             index: 0,
@@ -77,17 +95,20 @@ impl Chip8 {
             keypad: [0; 16],
             video: [0; 64 * 32],
             op_code: 0,
-        }
+        };
+        chip8.load_font();
+        chip8
     }
 
-    pub fn fetch(&mut self) -> u16 {
+    fn fetch(&mut self) -> u16 {
         let msb = self.memory[self.pc as usize];
         let lsb = self.memory[(self.pc + 1) as usize];
         self.pc += 2;
+        // or the two bytes to make the instr
         ((msb as u16) << 8) | (lsb as u16)
     }
 
-    pub fn decode(&mut self, instr: u16) {
+    fn decode(&mut self, instr: u16) {
         let opcode = instr & 0xF000;
         let x = ((instr & 0x0F00) >> 8) as usize;
         let y = ((instr & 0x00F0) >> 4) as usize;
@@ -95,15 +116,21 @@ impl Chip8 {
         let nn = instr & 0x00FF;
         let nnn = instr & 0x0FFF;
         match opcode {
-            0x00E0 => {
-                println!("CLS");
-                self.video = [0; 64 * 32]
-            }
-            0x00EE => {
-                println!("RET");
-                self.sp -= 1;
-                self.pc = self.stack[self.sp] as usize;
-            }
+            0x0000 => match nn {
+                0x00 => {
+                    println!("???? instr={instr:04X}");
+                }
+                0xE0 => {
+                    println!("CLS");
+                    self.video = [0; 64 * 32]
+                }
+                0xEE => {
+                    println!("RET");
+                    self.sp -= 1;
+                    self.pc = self.stack[self.sp] as usize;
+                }
+                _ => panic!("Illegal instruction: {instr:04X}"),
+            },
 
             0x1000 => {
                 println!("JMP $0x{nnn:03X}");
@@ -128,8 +155,8 @@ impl Chip8 {
                 }
             }
             0x5000 => {
-                println!("SNE V{x} V{y}");
-                if self.registers[x] != self.registers[y] {
+                println!("SE V{x} V{y}");
+                if self.registers[x] == self.registers[y] {
                     self.pc += 2;
                 }
             }
@@ -140,7 +167,9 @@ impl Chip8 {
             0x7000 => {
                 // VX := VX + NN,
                 println!("ADD V{x}, $0x{nn:03X}");
-                self.registers[x] += nn as u8;
+                let vx = self.registers[x];
+                let (result, _) = (vx as u16).overflowing_add(nn);
+                self.registers[x] = result as u8;
             }
             0x8000 => match n {
                 0x0 => {
@@ -339,19 +368,24 @@ impl Chip8 {
                         self.registers[reg] = self.memory[(self.index as usize) + reg];
                     }
                 }
-                _ => println!("Illegal instruction: {instr}"),
+                _ => println!("Illegal instruction: {instr:03X}"),
             },
 
-            _ => panic!("Illegal instruction: {instr}"),
+            _ => panic!("Illegal instruction: {instr:03X}"),
         };
     }
 
-    pub fn load_font(&mut self) {
+    fn load_font(&mut self) {
         println!("[CHIP8] Loading font...");
         // 050–09F
         for (i, addr) in (0x050..0x09f + 1).enumerate() {
             self.memory[addr] = FONT[i];
         }
+    }
+
+    pub fn cycle(&mut self) {
+        let instr = self.fetch();
+        self.decode(instr);
     }
 
     pub fn load_rom(&mut self, file_path: &String) -> Result<(), Box<dyn Error>> {
@@ -376,7 +410,63 @@ impl Chip8 {
     }
 }
 
-fn main() {
+pub struct Renderer {
+    canvas: WindowCanvas,
+    texture_creator: TextureCreator<WindowContext>, // Store this!
+}
+
+impl Renderer {
+    pub fn new(window: Window) -> Result<Renderer, String> {
+        let canvas = window.into_canvas().build().map_err(|e| e.to_string())?;
+        let texture_creator = canvas.texture_creator();
+
+        Ok(Renderer {
+            canvas,
+            texture_creator,
+        })
+    }
+
+    pub fn draw(
+        &mut self,
+        framebuffer: &[u32; DISPLAY_WIDTH * DISPLAY_HEIGHT],
+        scale: u32,
+    ) -> Result<(), String> {
+        // RGBA
+        let mut pixels = [0u8; DISPLAY_HEIGHT * DISPLAY_WIDTH * 3];
+        let mut texture = self
+            .texture_creator
+            .create_texture_streaming(
+                PixelFormatEnum::RGBA8888,
+                DISPLAY_WIDTH as u32,
+                DISPLAY_HEIGHT as u32,
+            )
+            .map_err(|e| e.to_string())?;
+
+        for (i, &pixel) in framebuffer.iter().enumerate() {
+            let color = if pixel != 0 { 255 } else { 0 }; // White or black
+            let pixel_start = i * 3;
+            pixels[pixel_start] = color; // R
+            pixels[pixel_start + 1] = color; // G
+            pixels[pixel_start + 2] = color; // B
+        }
+
+        // Drawing logic here...
+        // Update texture with pixel data
+        let _ = texture.update(None, &pixels, 64 * 3);
+
+        // Clear canvas and draw texture scaled up
+        self.canvas.set_draw_color(sdl2::pixels::Color::BLACK);
+        self.canvas.clear();
+
+        let dst_rect = Rect::new(0, 0, 64 * scale, 32 * scale);
+        self.canvas.copy(&texture, None, Some(dst_rect))?;
+
+        self.canvas.present();
+        Ok(())
+    }
+}
+
+fn main() -> Result<(), String> {
     println!("[CHIP8] Start emulator");
 
     let config = Config::build(env::args()).unwrap_or_else(|err| {
@@ -385,38 +475,53 @@ fn main() {
     });
 
     let mut chip8 = Chip8::new();
-    println!("reg: {:?}", chip8.registers);
-    println!("mem: {:?}", chip8.memory[0x200]);
-    println!("index: {:?}", chip8.index);
-    println!("pc: {:?}", chip8.pc);
-    println!("sp: {:?}", chip8.sp);
-    println!("stack: {:?}", chip8.stack);
-    println!("delay_timer: {:?}", chip8.delay_timer);
-    println!("sound_timer: {:?}", chip8.sound_timer);
-    println!("keypad: {:?}", chip8.keypad);
-    println!("video: {:?}", chip8.video[0]);
-    println!("op_code: {:?}", chip8.op_code);
 
     chip8.load_rom(&config.file_path).unwrap_or_else(|err| {
         eprintln!("Problem loading ROM @ {}: {err}", &config.file_path);
         process::exit(1);
     });
 
-    chip8.memory_hexdump(0x200, 0x238);
+    println!("[CHIP8] Init window");
 
-    chip8.load_font();
+    let sdl_context = sdl2::init()?;
+    let video_subsystem = sdl_context.video()?;
 
-    chip8.memory_hexdump(0x050, 0x09F + 1);
+    let window = video_subsystem
+        .window(
+            "Chip8 Emulator",
+            DISPLAY_WIDTH as u32 * config.video_scale_factor,
+            DISPLAY_HEIGHT as u32 * config.video_scale_factor,
+        )
+        .position_centered()
+        .opengl()
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut renderer = Renderer::new(window)?;
+
+    let mut event_pump = sdl_context.event_pump()?;
 
     println!("[CHIP8] Start fetch-decode-execute loop");
-    for _ in 0..10 {
-        let instr = chip8.fetch();
-        //let decoded_inster = chip8.decode(instr);
-        //chip8.execute(decoded_inster);
-        chip8.decode(instr);
-    }
 
+    'running: loop {
+        for event in event_pump.poll_iter() {
+            match event {
+                Event::Quit { .. }
+                | Event::KeyDown {
+                    keycode: Some(Keycode::Escape),
+                    ..
+                } => break 'running,
+                _ => {}
+            }
+        }
+
+        ::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / 30));
+        chip8.cycle();
+        // The rest of the game loop goes here...
+        let _ = renderer.draw(&chip8.video, config.video_scale_factor);
+    }
     println!("[CHIP8] Exiting...");
+    Ok(())
 }
 
 #[cfg(test)]
