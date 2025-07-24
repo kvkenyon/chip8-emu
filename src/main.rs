@@ -1,17 +1,16 @@
 extern crate sdl2;
 use rand::Rng;
 use sdl2::event::Event;
-use sdl2::keyboard::Keycode;
+use sdl2::keyboard::{Keycode, Scancode};
 use sdl2::pixels::PixelFormatEnum;
 use sdl2::rect::Rect;
 use sdl2::render::{TextureCreator, WindowCanvas};
-
 use sdl2::video::{Window, WindowContext};
 use std::error::Error;
 use std::fs::File;
 use std::io::Read;
 use std::process;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{env, usize};
 
 const DISPLAY_WIDTH: usize = 64;
@@ -44,6 +43,7 @@ const FONT: [u8; 80] = [
 pub struct Config {
     pub file_path: String,
     pub video_scale_factor: u32,
+    pub cycle_delay: u32,
 }
 
 impl Config {
@@ -60,9 +60,15 @@ impl Config {
             None => 2,
         };
 
+        let cycle_delay: u32 = match args.next() {
+            Some(delay) => delay.parse().unwrap_or(3),
+            None => 3,
+        };
+
         Ok(Config {
             file_path,
             video_scale_factor,
+            cycle_delay,
         })
     }
 }
@@ -386,6 +392,28 @@ impl Chip8 {
         };
     }
 
+    fn map_scancode_to_chip8_key(scancode: Scancode) -> Option<u8> {
+        match scancode {
+            Scancode::Num1 => Some(0x1),
+            Scancode::Num2 => Some(0x2),
+            Scancode::Num3 => Some(0x3),
+            Scancode::Num4 => Some(0xC),
+            Scancode::Q => Some(0x4),
+            Scancode::W => Some(0x5),
+            Scancode::E => Some(0x6),
+            Scancode::R => Some(0xD),
+            Scancode::A => Some(0x7),
+            Scancode::S => Some(0x8),
+            Scancode::D => Some(0x9),
+            Scancode::F => Some(0xE),
+            Scancode::Z => Some(0xA),
+            Scancode::X => Some(0x0),
+            Scancode::C => Some(0xB),
+            Scancode::V => Some(0xF),
+            _ => None,
+        }
+    }
+
     fn load_font(&mut self) {
         println!("[CHIP8] Loading font...");
         // 050–09F
@@ -397,6 +425,13 @@ impl Chip8 {
     pub fn cycle(&mut self) {
         let instr = self.fetch();
         self.decode(instr);
+        if self.delay_timer > 0 {
+            self.delay_timer -= 1;
+        }
+
+        if self.sound_timer > 0 {
+            self.sound_timer -= 1;
+        }
     }
 
     pub fn load_rom(&mut self, file_path: &String) -> Result<(), Box<dyn Error>> {
@@ -521,6 +556,9 @@ fn main() -> Result<(), String> {
 
     println!("[CHIP8] Start fetch-decode-execute loop");
 
+    let mut last_cycle_time = Instant::now();
+    let cycle_delay = Duration::from_millis(config.cycle_delay as u64); // 2ms = 500Hz
+
     'running: loop {
         for event in event_pump.poll_iter() {
             match event {
@@ -529,14 +567,41 @@ fn main() -> Result<(), String> {
                     keycode: Some(Keycode::Escape),
                     ..
                 } => break 'running,
+                Event::KeyDown {
+                    scancode: Some(scancode),
+                    ..
+                } => {
+                    // Map the scancode to a CHIP-8 key (0-F)
+                    if let Some(chip8_key_index) = Chip8::map_scancode_to_chip8_key(scancode) {
+                        // Update your CHIP-8's keypad state
+                        chip8.keypad[chip8_key_index as usize] = 1;
+                    }
+                }
+                Event::KeyUp {
+                    scancode: Some(scancode),
+                    ..
+                } => {
+                    // Map the scancode to a CHIP-8 key (0-F)
+                    if let Some(chip8_key_index) = Chip8::map_scancode_to_chip8_key(scancode) {
+                        // Update your CHIP-8's keypad state
+                        chip8.keypad[chip8_key_index as usize] = 0;
+                    }
+                }
                 _ => {}
             }
         }
 
         ::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / 30));
-        chip8.cycle();
+
+        let current_time = Instant::now();
+        let dt = current_time.duration_since(last_cycle_time);
+
+        if dt >= cycle_delay {
+            last_cycle_time = current_time;
+            chip8.cycle();
+            let _ = renderer.draw(&chip8.video, config.video_scale_factor);
+        }
         // The rest of the game loop goes here...
-        let _ = renderer.draw(&chip8.video, config.video_scale_factor);
     }
     println!("[CHIP8] Exiting...");
     Ok(())
